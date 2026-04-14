@@ -1,0 +1,20 @@
+[package]
+name = "midw-ipc"
+version = "0.1.0"
+edition = "2021"
+description = "IPC node implementation via Unix-domain sockets (nodes C and D)"
+
+[[bin]]
+name = "midw-node"
+path = "src/bin/midw-node.rs"
+
+[dependencies]
+async-trait = "0.1"
+midw-common = { path = "../midw-common" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
