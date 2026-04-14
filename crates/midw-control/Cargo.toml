@@ -1,0 +1,15 @@
+[package]
+name = "midw-control"
+version = "0.1.0"
+edition = "2021"
+description = "Control node X – manages and dispatches commands to all registered nodes"
+
+[dependencies]
+midw-common = { path = "../midw-common" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+[dev-dependencies]
+async-trait = "0.1"
+midw-local = { path = "../midw-local" }
+tokio = { version = "1", features = ["full", "test-util"] }

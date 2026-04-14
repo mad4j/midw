@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/midw-common",
+    "crates/midw-local",
+    "crates/midw-ipc",
+    "crates/midw-control",
+    "crates/midw-demo",
+]
+resolver = "2"
