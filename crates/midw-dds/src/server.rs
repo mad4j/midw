@@ -1,13 +1,14 @@
-//! DDS node server — hdds DDS-RPC transport for the midw architecture.
+//! DDS node server — hdds pub/sub transport for the midw architecture.
 //!
-//! [`DdsNodeServer`] registers an hdds [`ServiceServer`] bound to the DDS
-//! service `midw/node/<id>`.  Incoming commands arrive as JSON-encoded bytes
-//! via the RPC request topic; responses are returned the same way.
+//! [`DdsNodeServer`] creates DDS DataReader/DataWriter for a request/reply
+//! topic pair and processes commands in a background OS thread.  Clients
+//! connect via [`DdsNodeHandle`](crate::DdsNodeHandle).
 
+use crate::types::{NodeReply, NodeRequest};
 use midw_common::{Command, ConfigParams, NodeStatus, Response, TestResult};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 // ── Shared node state ─────────────────────────────────────────────────────────
@@ -52,47 +53,41 @@ impl NodeState {
                     Response::Error(format!("node '{}' is not running", self.id))
                 } else {
                     self.running = false;
+                    self.start_time = None;
                     info!(node = %self.id, "stopped");
                     Response::Ok
                 }
             }
 
             Command::Query => {
-                let uptime_secs = self
-                    .start_time
-                    .filter(|_| self.running)
-                    .map(|t| t.elapsed().as_secs())
-                    .unwrap_or(0);
-                debug!(node = %self.id, running = self.running, uptime_secs, "query");
+                debug!(node = %self.id, "query");
                 Response::Status(NodeStatus {
                     id: self.id.clone(),
                     running: self.running,
-                    uptime_secs,
+                    uptime_secs: self
+                        .start_time
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0),
                     message_count: self.message_count,
+                    config: self.config.clone(),
                 })
             }
 
             Command::Config(ConfigParams { key, value }) => {
-                info!(node = %self.id, %key, %value, "config");
+                debug!(node = %self.id, %key, %value, "config");
                 self.config.insert(key, value);
                 Response::Ok
             }
 
             Command::Test => {
-                let passed = self.running;
-                info!(node = %self.id, passed, "test");
+                debug!(node = %self.id, "test");
                 Response::TestResult(TestResult {
-                    passed,
-                    message: if passed {
-                        format!("node '{}' self-test passed", self.id)
+                    passed: self.running,
+                    message: if self.running {
+                        "node is running — test passed".to_string()
                     } else {
-                        format!("node '{}' self-test failed: node not running", self.id)
+                        "node is not running — test failed".to_string()
                     },
-                    details: vec![
-                        format!("running: {}", self.running),
-                        format!("message_count: {}", self.message_count),
-                        format!("config_entries: {}", self.config.len()),
-                    ],
                 })
             }
         }
@@ -101,11 +96,11 @@ impl NodeState {
 
 // ── DDS node server ───────────────────────────────────────────────────────────
 
-/// DDS node server backed by hdds [`ServiceServer`].
+/// DDS node server backed by hdds pub/sub.
 ///
-/// After calling [`serve`](DdsNodeServer::serve) the node registers a DDS-RPC
-/// service named `midw/node/<id>` and processes commands on a background tokio
-/// task.  Clients connect via [`DdsNodeHandle`](crate::DdsNodeHandle).
+/// After calling [`serve`](DdsNodeServer::serve) the node listens on
+/// `midw/node/<id>/req` and sends replies on `midw/node/<id>/rep`.
+/// Clients connect via [`DdsNodeHandle`](crate::DdsNodeHandle).
 pub struct DdsNodeServer {
     id: String,
     participant: Arc<hdds::Participant>,
@@ -114,8 +109,8 @@ pub struct DdsNodeServer {
 impl DdsNodeServer {
     /// Create a new server configuration.
     ///
-    /// The service is **not** registered until [`serve`](Self::serve) is
-    /// called.  `transport` controls the RTPS transport:
+    /// The service is **not** started until [`serve`](Self::serve) is called.
+    /// `transport` controls the DDS transport:
     /// - [`hdds::TransportMode::IntraProcess`] — same process (tests)
     /// - [`hdds::TransportMode::UdpMulticast`] — cross-process / cross-machine
     pub fn new(id: impl Into<String>, transport: hdds::TransportMode) -> hdds::Result<Self> {
@@ -127,69 +122,75 @@ impl DdsNodeServer {
         Ok(Self { id, participant })
     }
 
-    /// Register the DDS service and start the request-processing loop on a
-    /// dedicated OS thread.
+    /// Start the request-processing loop on a dedicated OS thread.
     ///
-    /// Returns `Ok(())` as soon as the service is registered so that clients
-    /// can connect immediately after this call returns.
-    ///
-    /// # Thread model
-    ///
-    /// `hdds::rpc::ServiceServer` (and `DataWriter` inside it) is `Send` but
-    /// `!Sync`.  The `spin()` future holds `&self` across `.await` points,
-    /// which makes it `!Send`.  A dedicated current-thread tokio runtime with
-    /// a `LocalSet` lets `block_on` drive the `!Send` future without requiring
-    /// `Send` on the future itself.
+    /// Returns immediately so callers can create handles right after.
     pub fn serve(self) -> hdds::Result<()> {
-        let service_name = format!("midw/node/{}", self.id);
-        let state = Arc::new(Mutex::new(NodeState::new(&self.id)));
         let node_id = self.id.clone();
+        let req_topic = format!("midw/node/{}/req", node_id);
+        let rep_topic = format!("midw/node/{}/rep", node_id);
         let participant = self.participant;
 
-        info!(node = %node_id, service = %service_name, "DDS service starting");
+        info!(node = %node_id, "DDS node starting");
 
-        let handler =
-            move |_req_id: hdds::rpc::SampleIdentity,
-                  payload: &[u8]|
-                  -> Result<Vec<u8>, (hdds::rpc::RemoteExceptionCode, String)> {
-                let cmd: Command = serde_json::from_slice(payload).map_err(|e| {
-                    error!(node = %node_id, "parse error: {}", e);
-                    (
-                        hdds::rpc::RemoteExceptionCode::InvalidArgument,
-                        format!("parse error: {}", e),
-                    )
-                })?;
+        let qos = hdds::QoS::reliable().keep_all().volatile();
 
-                let response = state.lock().unwrap().handle(cmd);
+        let req_reader: hdds::DataReader<NodeRequest> = participant
+            .topic(&req_topic)
+            .map_err(|e| hdds::Error::InvalidState(e.to_string()))?
+            .reader()
+            .qos(qos.clone())
+            .build()
+            .map_err(|e| hdds::Error::InvalidState(e.to_string()))?;
 
-                serde_json::to_vec(&response).map_err(|e| {
-                    (
-                        hdds::rpc::RemoteExceptionCode::InternalError,
-                        format!("serialize error: {}", e),
-                    )
-                })
-            };
+        let rep_writer: hdds::DataWriter<NodeReply> = participant
+            .topic(&rep_topic)
+            .map_err(|e| hdds::Error::InvalidState(e.to_string()))?
+            .writer()
+            .qos(qos)
+            .build()
+            .map_err(|e| hdds::Error::InvalidState(e.to_string()))?;
 
-        // ServiceServer::new() is synchronous – create it here before spawning
-        // the thread so we can surface errors immediately.
-        let server =
-            hdds::rpc::ServiceServer::new(&participant, &service_name, handler)
-                .map_err(|e| hdds::Error::InvalidState(e.to_string()))?;
+        let state = Arc::new(Mutex::new(NodeState::new(&node_id)));
 
-        // Dedicated OS thread owns the !Send ServiceServer.
-        // Use rt.block_on() directly — same pattern as the hdds C FFI:
-        // `spin()` returns a !Send future but block_on() doesn't require Send.
         std::thread::Builder::new()
-            .name(format!("midw-node-{}", self.id))
+            .name(format!("midw-node-{}", node_id))
             .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("DDS node runtime");
-                rt.block_on(async move {
-                    let _participant = participant;
-                    server.spin().await;
-                });
+                let _participant = participant;
+                loop {
+                    match req_reader.take() {
+                        Ok(Some(request)) => {
+                            let result: Result<Response, _> =
+                                serde_json::from_slice(&request.payload).map(|cmd: Command| {
+                                    state.lock().unwrap().handle(cmd)
+                                });
+                            let reply_payload = match result {
+                                Ok(resp) => match serde_json::to_vec(&resp) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        error!(node = %node_id, "serialize error: {}", e);
+                                        continue;
+                                    }
+                                },
+                                Err(e) => {
+                                    error!(node = %node_id, "deserialize error: {}", e);
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = rep_writer.write(&NodeReply {
+                                correlation_id: request.correlation_id,
+                                payload: reply_payload,
+                            }) {
+                                error!(node = %node_id, "reply write error: {}", e);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            error!(node = %node_id, "reader error: {}", e);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_micros(100));
+                }
             })
             .map_err(hdds::Error::IoError)?;
 
