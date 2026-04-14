@@ -10,28 +10,32 @@
 //!            │  start / stop / query / config / test        │
 //!            └────┬──────────┬──────────┬──────────┬────────┘
 //!                 │          │          │          │
-//!          (local chan) (local chan) (Unix sock) (Unix sock)
+//!          (local chan) (local chan) (DDS-RPC)  (DDS-RPC)
 //!                 │          │          │          │
 //!              Node A     Node B     Node C     Node D
-//!            (local)    (local)     (IPC)      (IPC)
+//!            (local)    (local)     (DDS)      (DDS)
 //! ```
 //!
 //! Nodes **A** and **B** run inside this process, communicating with X via
 //! tokio channels (no serialization overhead).
 //!
-//! Nodes **C** and **D** run on Unix-domain sockets — commands are serialized
-//! as newline-delimited JSON, following DDS request/reply semantics.  In this
-//! demo the IPC servers are started as tokio tasks in the same process, but
-//! they could equally be separate OS processes (see `midw-node` binary).
+//! Nodes **C** and **D** use [hdds](https://github.com/hdds-team/hdds) DDS-RPC
+//! over RTPS.  In this demo the DDS servers run as tokio tasks in the same
+//! process using `IntraProcess` transport (zero-copy, zero network overhead).
+//! Switch to `TransportMode::UdpMulticast` and run `midw-dds-node` as a
+//! separate process to distribute across machines.
 
 use midw_common::{ConfigParams, Response};
 use midw_control::ControlNode;
-use midw_ipc::{IpcNodeHandle, IpcNodeServer};
+use midw_dds::{DdsNodeHandle, DdsNodeServer, TransportMode};
 use midw_local::LocalNodeHandle;
 use std::sync::Arc;
+use std::time::Duration;
 
-const SOCKET_C: &str = "/tmp/midw-demo-C.sock";
-const SOCKET_D: &str = "/tmp/midw-demo-D.sock";
+// DDS transport mode used by nodes C and D in this demo.
+// Switch to `TransportMode::UdpMulticast` and run `midw-dds-node` as a
+// separate process for true cross-machine distribution.
+const DDS_TRANSPORT: TransportMode = TransportMode::IntraProcess;
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -82,13 +86,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     println!("╔═════════════════════════════════════════════════════╗");
-    println!("║     midw — DDS-inspired Communication Architecture  ║");
+    println!("║     midw — DDS Communication Architecture           ║");
     println!("╠═════════════════════════════════════════════════════╣");
     println!("║  Control Node X                                     ║");
     println!("║    ├── Node A  (local / tokio channel)              ║");
     println!("║    ├── Node B  (local / tokio channel)              ║");
-    println!("║    ├── Node C  (IPC   / Unix-domain socket)         ║");
-    println!("║    └── Node D  (IPC   / Unix-domain socket)         ║");
+    println!("║    ├── Node C  (DDS   / hdds DDS-RPC)               ║");
+    println!("║    └── Node D  (DDS   / hdds DDS-RPC)               ║");
     println!("╚═════════════════════════════════════════════════════╝");
 
     // ── Build node handles ────────────────────────────────────────────────────
@@ -97,11 +101,13 @@ async fn main() -> anyhow::Result<()> {
     let node_a = Arc::new(LocalNodeHandle::new("A", 32));
     let node_b = Arc::new(LocalNodeHandle::new("B", 32));
 
-    // IPC nodes C and D: bind Unix sockets, serve on background tasks.
-    IpcNodeServer::new("C", SOCKET_C).serve().await?;
-    IpcNodeServer::new("D", SOCKET_D).serve().await?;
-    let node_c = Arc::new(IpcNodeHandle::new("C", SOCKET_C));
-    let node_d = Arc::new(IpcNodeHandle::new("D", SOCKET_D));
+    // DDS nodes C and D: register hdds DDS-RPC services, serve on background tasks.
+    DdsNodeServer::new("C", DDS_TRANSPORT)?.serve()?;
+    DdsNodeServer::new("D", DDS_TRANSPORT)?.serve()?;
+    // Allow intra-process DDS discovery to complete before the first call.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let node_c = Arc::new(DdsNodeHandle::new("C", DDS_TRANSPORT)?);
+    let node_d = Arc::new(DdsNodeHandle::new("D", DDS_TRANSPORT)?);
 
     // ── Wire everything into control node X ──────────────────────────────────
 

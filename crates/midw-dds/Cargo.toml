@@ -1,0 +1,21 @@
+[package]
+name = "midw-dds"
+version = "0.1.0"
+edition = "2021"
+description = "DDS transport layer for midw using hdds (High-performance Data Distribution Service)"
+
+[[bin]]
+name = "midw-dds-node"
+path = "src/bin/midw-dds-node.rs"
+
+[dependencies]
+async-trait = "0.1"
+hdds = { git = "https://github.com/hdds-team/hdds", features = ["rpc"] }
+midw-common = { path = "../midw-common" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

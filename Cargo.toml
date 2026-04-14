@@ -3,6 +3,7 @@ members = [
     "crates/midw-common",
     "crates/midw-local",
     "crates/midw-ipc",
+    "crates/midw-dds",
     "crates/midw-control",
     "crates/midw-demo",
 ]
