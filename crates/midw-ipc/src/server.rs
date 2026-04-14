@@ -3,7 +3,7 @@
 //! [`IpcNodeServer`] binds to a socket path and spawns a tokio task that
 //! accepts incoming connections.  Each connection is handled in its own task:
 //!
-//! 1. Read one JSON line → deserialise into [`Command`].
+//! 1. Read one JSON line → deserialize into [`Command`].
 //! 2. Process the command against shared [`NodeState`].
 //! 3. Serialise the [`Response`] and write one JSON line back.
 //! 4. Close the connection.
@@ -209,7 +209,7 @@ impl IpcNodeServer {
                     error!(node = %node_id, "write error: {}", e);
                 }
             }
-            Err(e) => error!(node = %node_id, "serialise error: {}", e),
+            Err(e) => error!(node = %node_id, "serialize error: {}", e),
         }
     }
 }

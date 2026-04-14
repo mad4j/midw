@@ -18,9 +18,9 @@
 //! ```
 //!
 //! Nodes A and B live in the same process as X; commands are delivered via
-//! in-process tokio channels (zero-copy, no serialisation overhead).
+//! in-process tokio channels (zero-copy, no serialization overhead).
 //!
-//! Nodes C and D run as separate processes; commands are serialised as
+//! Nodes C and D run as separate processes; commands are serialized as
 //! newline-delimited JSON and exchanged over Unix-domain sockets, following
 //! a DDS-inspired request/reply pattern.
 
@@ -87,8 +87,8 @@ pub enum NodeError {
     #[error("communication error: {0}")]
     Communication(String),
 
-    #[error("serialisation error: {0}")]
-    Serialisation(#[from] serde_json::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -17,9 +17,9 @@
 //! ```
 //!
 //! Nodes **A** and **B** run inside this process, communicating with X via
-//! tokio channels (no serialisation overhead).
+//! tokio channels (no serialization overhead).
 //!
-//! Nodes **C** and **D** run on Unix-domain sockets — commands are serialised
+//! Nodes **C** and **D** run on Unix-domain sockets — commands are serialized
 //! as newline-delimited JSON, following DDS request/reply semantics.  In this
 //! demo the IPC servers are started as tokio tasks in the same process, but
 //! they could equally be separate OS processes (see `midw-node` binary).

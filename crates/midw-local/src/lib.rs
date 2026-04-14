@@ -4,7 +4,7 @@
 //!
 //! Each [`LocalNodeHandle`] spawns a dedicated tokio task that owns the node
 //! state.  Commands are delivered via a bounded `mpsc` channel; responses are
-//! returned via per-request `oneshot` channels.  No serialisation overhead —
+//! returned via per-request `oneshot` channels.  No serialization overhead —
 //! everything stays on the heap of the calling process.
 
 use async_trait::async_trait;
@@ -76,9 +76,9 @@ impl NodeState {
                 })
             }
 
-            Command::Config(params) => {
-                info!(node = %self.id, key = %params.key, value = %params.value, "config");
-                self.config.insert(params.key, params.value);
+            Command::Config(ConfigParams { key, value }) => {
+                info!(node = %self.id, %key, %value, "config");
+                self.config.insert(key, value);
                 Response::Ok
             }
 
